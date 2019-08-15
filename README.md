@@ -1,16 +1,27 @@
+[//]: # (insert files: $ embedmd -w README.md)
+
 # Kubernetes The Hard Way - AWS
 
-This page is based on [Kubernetes The Hard
-Way](https://github.com/kelseyhightower/kubernetes-the-hard-way/) guide. It
-compiles AWS CLI commands, mainly from revision
-[8185017](https://github.com/kelseyhightower/kubernetes-the-hard-way/tree/818501707e418fc4d6e6aedef8395ca368e3097e)
-of the guide (right before AWS support has been removed), with small
-adjustments. Best is to follow the original guide side-by-side with this page as
-the former providers background and context and this page contains only the
-commands.
+Kubernetes is a powerful ecosystem for scaling cloud applications, but to
+  [use it well](https://medium.com/@Instaclustr/anomalia-machina-7-kubernetes-cluster-creation-and-application-deployment-e10f19132809),
+requires familiarity with a mixture of cloud computing (e.g. AWS), networking, security, linux, grid computing,
+systems administration, resource management and performance engineering.
+  
+[Kubernetes The Hard Way](https://github.com/kelseyhightower/kubernetes-the-hard-way/) guide by Kelsey Hightower guides you through
+manually building Kubernetes infrastrure for improved understanding. That project  originally supported both Google Cloud Platform (GCP)
+and Amazon Web Services (AWS), but AWS support was later dropped.
 
-The intent of this page is similar to the original guide. My motivation to
-compile it has been to learn more about AWS and Kubernetes.
+This version of the project is based on [Slawekzachcial's fork)](https://github.com/slawekzachcial/kubernetes-the-hard-way-aws)
+which continued support of AWS.
+
+The intent of this project remains for learning about Kubernetes and AWS deployment,
+while including the advantages of using Terraform and Packer to simplify configuration.
+In addition, using Terraform and Packer significantly improves the speed at which resources can be launched,
+allowing for faster testing.
+
+Another goal of this project is to use Terraform to make the Kubernetes material more platform independant,
+and more easily support AWS, GCP, and Microsoft Azure platforms (in future work).
+
 
 ## Labs
 
@@ -58,167 +69,15 @@ brew install cfssl
 
 ## Networking
 
-### VPC
+[embedmd]:# (terraform/variables.tf)
 
-```sh
-VPC_ID=$(aws ec2 create-vpc \
-  --cidr-block 10.240.0.0/24 \
-  --output text --query 'Vpc.VpcId')
-aws ec2 create-tags \
-  --resources ${VPC_ID} \
-  --tags Key=Name,Value=kubernetes-the-hard-way
-aws ec2 modify-vpc-attribute \
-  --vpc-id ${VPC_ID} \
-  --enable-dns-support '{"Value": true}'
-aws ec2 modify-vpc-attribute \
-  --vpc-id ${VPC_ID} \
-  --enable-dns-hostnames '{"Value": true}'
-```
+[embedmd]:# (terraform/aws_provider.tf)
 
-### DHCP Option Sets
+## Load Balancer
 
-```sh
-AWS_REGION=us-east-2
-```
-
-```sh
-DHCP_OPTION_SET_ID=$(aws ec2 create-dhcp-options \
-  --dhcp-configuration \
-    "Key=domain-name,Values=$AWS_REGION.compute.internal" \
-    "Key=domain-name-servers,Values=AmazonProvidedDNS" \
-  --output text --query 'DhcpOptions.DhcpOptionsId')
-aws ec2 create-tags \
-  --resources ${DHCP_OPTION_SET_ID} \
-  --tags Key=Name,Value=kubernetes
-aws ec2 associate-dhcp-options \
-  --dhcp-options-id ${DHCP_OPTION_SET_ID} \
-  --vpc-id ${VPC_ID}
-```
-
-### Subnet
-
-```sh
-SUBNET_ID=$(aws ec2 create-subnet \
-  --vpc-id ${VPC_ID} \
-  --cidr-block 10.240.0.0/24 \
-  --output text --query 'Subnet.SubnetId')
-aws ec2 create-tags \
-  --resources ${SUBNET_ID} \
-  --tags Key=Name,Value=kubernetes
-```
-
-### Internet Gateway
-
-```sh
-INTERNET_GATEWAY_ID=$(aws ec2 create-internet-gateway \
-  --output text --query 'InternetGateway.InternetGatewayId')
-aws ec2 create-tags \
-  --resources ${INTERNET_GATEWAY_ID} \
-  --tags Key=Name,Value=kubernetes
-aws ec2 attach-internet-gateway \
-  --internet-gateway-id ${INTERNET_GATEWAY_ID} \
-  --vpc-id ${VPC_ID}
-```
-
-### Route Tables
-
-```sh
-ROUTE_TABLE_ID=$(aws ec2 create-route-table \
-  --vpc-id ${VPC_ID} \
-  --output text --query 'RouteTable.RouteTableId')
-aws ec2 create-tags \
-  --resources ${ROUTE_TABLE_ID} \
-  --tags Key=Name,Value=kubernetes
-aws ec2 associate-route-table \
-  --route-table-id ${ROUTE_TABLE_ID} \
-  --subnet-id ${SUBNET_ID}
-aws ec2 create-route \
-  --route-table-id ${ROUTE_TABLE_ID} \
-  --destination-cidr-block 0.0.0.0/0 \
-  --gateway-id ${INTERNET_GATEWAY_ID}
-```
-
-### Firewall Rules (aka Security Groups)
-
-```sh
-SECURITY_GROUP_ID=$(aws ec2 create-security-group \
-  --group-name kubernetes \
-  --description "Kubernetes security group" \
-  --vpc-id ${VPC_ID} \
-  --output text --query 'GroupId')
-aws ec2 create-tags \
-  --resources ${SECURITY_GROUP_ID} \
-  --tags Key=Name,Value=kubernetes
-aws ec2 authorize-security-group-ingress \
-  --group-id ${SECURITY_GROUP_ID} \
-  --protocol all \
-  --cidr 10.240.0.0/24
-aws ec2 authorize-security-group-ingress \
-  --group-id ${SECURITY_GROUP_ID} \
-  --protocol all \
-  --cidr 10.200.0.0/16
-aws ec2 authorize-security-group-ingress \
-  --group-id ${SECURITY_GROUP_ID} \
-  --protocol tcp \
-  --port 22 \
-  --cidr 0.0.0.0/0
-aws ec2 authorize-security-group-ingress \
-  --group-id ${SECURITY_GROUP_ID} \
-  --protocol tcp \
-  --port 6443 \
-  --cidr 0.0.0.0/0
-aws ec2 authorize-security-group-ingress \
-  --group-id ${SECURITY_GROUP_ID} \
-  --protocol icmp \
-  --port -1 \
-  --cidr 0.0.0.0/0
-```
-
-### Kubernetes Public Address
-
-```sh
-LOAD_BALANCER_ARN=$(aws elbv2 create-load-balancer \
-  --name kubernetes \
-  --subnets ${SUBNET_ID} \
-  --scheme internet-facing \
-  --type network \
-  --output text --query 'LoadBalancers[].LoadBalancerArn')
-TARGET_GROUP_ARN=$(aws elbv2 create-target-group \
-  --name kubernetes \
-  --protocol TCP \
-  --port 6443 \
-  --vpc-id ${VPC_ID} \
-  --target-type ip \
-  --output text --query 'TargetGroups[].TargetGroupArn')
-aws elbv2 register-targets \
-  --target-group-arn ${TARGET_GROUP_ARN} \
-  --targets Id=10.240.0.1{0,1,2}
-aws elbv2 create-listener \
-  --load-balancer-arn ${LOAD_BALANCER_ARN} \
-  --protocol TCP \
-  --port 6443 \
-  --default-actions Type=forward,TargetGroupArn=${TARGET_GROUP_ARN} \
-  --output text --query 'Listeners[].ListenerArn'
-```
-
-```sh
-KUBERNETES_PUBLIC_ADDRESS=$(aws elbv2 describe-load-balancers \
-  --load-balancer-arns ${LOAD_BALANCER_ARN} \
-  --output text --query 'LoadBalancers[].DNSName')
-```
+[embedmd]:# (terraform/elb_aws.tf)
 
 ## Compute Instances
-
-### Instance Image
-
-```sh
-IMAGE_ID=$(aws ec2 describe-images --owners 099720109477 \
-  --filters \
-  'Name=root-device-type,Values=ebs' \
-  'Name=architecture,Values=x86_64' \
-  'Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-xenial-16.04-amd64-server-*' \
-  | jq -r '.Images|sort_by(.Name)[-1]|.ImageId')
-```
 
 ### SSH Key Pair
 
@@ -232,7 +91,129 @@ aws ec2 create-key-pair \
 chmod 600 ssh/kubernetes.id_rsa
 ```
 
-### Kubernetes Controllers
+### Kubernetes Controller Image (Packer)
+[embedmd]:# (packer/controller.json)
+```json
+{
+    "variables": {
+	"aws_access_key": "{{env `AWS_ACCESS_KEY_ID`}}",
+	"aws_secret_key": "{{env `AWS_SECRET_ACCESS_KEY`}}",
+	"db_password": "{{env `TF_VAR_db_password`}}"
+    },
+    "builders": [{
+	"type": "amazon-ebs",
+	"access_key": "{{user `aws_access_key`}}",
+	"secret_key": "{{user `aws_secret_key`}}",
+	"region": "us-west-1",
+	"source_ami_filter": {
+	    "filters": {
+		"virtualization-type": "hvm",
+		"name": "amzn2-ami-hvm-2.0.*-x86_64-gp2",
+		"root-device-type": "ebs"
+	    },
+	    "owners": ["137112412989"],
+	    "most_recent": true
+	},
+	"instance_type": "t2.micro",
+	"ssh_username": "ec2-user",
+	"ami_name": "ami-addr {{timestamp}}"
+    }],
+      "provisioners": [
+      {
+      // Encryption Config File
+      "type": "file",
+      "source": "cfg/encryption-config.yaml",
+      "destination": "~/"
+      },
+	        "type": "file",
+      "source": "kube-apiserver.service",
+      "destination": "~/"
+      },
+          "type": "file",
+      "source": "kube-controller-manager.service",
+      "destination": "~/"
+},
+      "type": "file",
+      "source": "kube-scheduler.service",
+      "destination": "~/"
+      },
+    {	  
+      "type": "shell",
+      "inline": [
+	  "sudo mv kube-apiserver.service kube-scheduler.service kube-controller-manager.service /etc/systemd/system/",
+          "sudo systemctl daemon-reload",
+	  "sudo systemctl enable kube-apiserver kube-controller-manager kube-scheduler",
+	  "sudo systemctl start kube-apiserver kube-controller-manager kube-scheduler"
+      ]
+    }]
+}
+
+```
+
+### Kubernetes Worker Image (Packer)
+[embedmd]:# (packer/worker.json)
+```json
+{
+    "variables": {
+	"aws_access_key": "{{env `AWS_ACCESS_KEY_ID`}}",
+	"aws_secret_key": "{{env `AWS_SECRET_ACCESS_KEY`}}",
+	"db_password": "{{env `TF_VAR_db_password`}}"
+    },
+    "builders": [{
+	"type": "amazon-ebs",
+	"access_key": "{{user `aws_access_key`}}",
+	"secret_key": "{{user `aws_secret_key`}}",
+	"region": "us-west-1",
+	"source_ami_filter": {
+	    "filters": {
+		"virtualization-type": "hvm",
+		"name": "amzn2-ami-hvm-2.0.*-x86_64-gp2",
+		"root-device-type": "ebs"
+	    },
+	    "owners": ["137112412989"],
+	    "most_recent": true
+	},
+	"instance_type": "t2.micro",
+	"ssh_username": "ec2-user",
+	"ami_name": "ami-addr {{timestamp}}"
+    }],
+      "provisioners": [
+    {
+      "type": "file",
+      "source": "../ReqAddr",
+      "destination": "/tmp/ReqAddr"
+    },
+    {	  
+    "type": "shell",
+      // Bootstrapping the Kubernetes Worker Nodes
+      "inline": [
+        "sudo apt-get update",
+        "sudo apt-get -y install socat"
+        "wget -q --show-progress --https-only --timestamping \
+           https://github.com/containernetworking/plugins/releases/download/v0.6.0/cni-plugins-amd64-v0.6.0.tgz \
+           https://github.com/containerd/cri-containerd/releases/download/v1.0.0-beta.1/cri-containerd-1.0.0-beta.1.linux-amd64.tar.gz \
+           https://storage.googleapis.com/kubernetes-release/release/v1.9.0/bin/linux/amd64/kubectl \
+           https://storage.googleapis.com/kubernetes-release/release/v1.9.0/bin/linux/amd64/kube-proxy \
+           https://storage.googleapis.com/kubernetes-release/release/v1.9.0/bin/linux/amd64/kubelet",
+	"sudo mkdir -p \
+          /etc/cni/net.d \
+          /opt/cni/bin \
+          /var/lib/kubelet \
+          /var/lib/kube-proxy \
+          /var/lib/kubernetes \
+          /var/run/kubernetes",
+        "sudo tar -xvf cni-plugins-amd64-v0.6.0.tgz -C /opt/cni/bin/",
+        "sudo tar -xvf cri-containerd-1.0.0-beta.1.linux-amd64.tar.gz -C /",
+        "chmod +x kubectl kube-proxy kubelet",
+        "sudo mv kubectl kube-proxy kubelet /usr/local/bin/"
+      ]
+    }]
+}
+
+```
+
+
+### Instantiating Kubernetes Controllers
 
 Using `t2.micro` instead of `t2.small` as `t2.micro` is covered by AWS free tier
 
@@ -258,7 +239,7 @@ for i in 0 1 2; do
 done
 ```
 
-### Kubernetes Workers
+### Instantiating Kubernetes Workers
 
 ```sh
 for i in 0 1 2; do
@@ -623,19 +604,13 @@ ssh -i ssh/kubernetes.id_rsa ubuntu@${external_ip}
 Execute on each controller:
 
 ```sh
-wget -q --show-progress --https-only --timestamping \
-  "https://github.com/coreos/etcd/releases/download/v3.2.11/etcd-v3.2.11-linux-amd64.tar.gz"
-tar -xvf etcd-v3.2.11-linux-amd64.tar.gz
-sudo mv etcd-v3.2.11-linux-amd64/etcd* /usr/local/bin/
-sudo mkdir -p /etc/etcd /var/lib/etcd
-sudo cp ca.pem kubernetes-key.pem kubernetes.pem /etc/etcd/
-INTERNAL_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
 ```
 
 ```sh
 ETCD_NAME=$(curl -s http://169.254.169.254/latest/user-data/ \
   | tr "|" "\n" | grep "^name" | cut -d"=" -f2)
 echo "${ETCD_NAME}"
+INTERNAL_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
 ```
 
 ```sh
@@ -698,13 +673,6 @@ ssh -i ssh/kubernetes.id_rsa ubuntu@${external_ip}
 Execute on each controller:
 
 ```sh
-wget -q --show-progress --https-only --timestamping \
-  "https://storage.googleapis.com/kubernetes-release/release/v1.9.0/bin/linux/amd64/kube-apiserver" \
-  "https://storage.googleapis.com/kubernetes-release/release/v1.9.0/bin/linux/amd64/kube-controller-manager" \
-  "https://storage.googleapis.com/kubernetes-release/release/v1.9.0/bin/linux/amd64/kube-scheduler" \
-  "https://storage.googleapis.com/kubernetes-release/release/v1.9.0/bin/linux/amd64/kubectl"
-chmod +x kube-apiserver kube-controller-manager kube-scheduler kubectl
-sudo mv kube-apiserver kube-controller-manager kube-scheduler kubectl /usr/local/bin/
 sudo mkdir -p /var/lib/kubernetes/
 sudo mv ca.pem ca-key.pem kubernetes-key.pem kubernetes.pem encryption-config.yaml /var/lib/kubernetes/
 INTERNAL_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
@@ -876,34 +844,10 @@ ssh -i ssh/kubernetes.id_rsa ubuntu@${external_ip}
 Execute on each worker:
 
 ```sh
-sudo apt-get update
-sudo apt-get -y install socat
-wget -q --show-progress --https-only --timestamping \
-  https://github.com/containernetworking/plugins/releases/download/v0.6.0/cni-plugins-amd64-v0.6.0.tgz \
-  https://github.com/containerd/cri-containerd/releases/download/v1.0.0-beta.1/cri-containerd-1.0.0-beta.1.linux-amd64.tar.gz \
-  https://storage.googleapis.com/kubernetes-release/release/v1.9.0/bin/linux/amd64/kubectl \
-  https://storage.googleapis.com/kubernetes-release/release/v1.9.0/bin/linux/amd64/kube-proxy \
-  https://storage.googleapis.com/kubernetes-release/release/v1.9.0/bin/linux/amd64/kubelet
-sudo mkdir -p \
-  /etc/cni/net.d \
-  /opt/cni/bin \
-  /var/lib/kubelet \
-  /var/lib/kube-proxy \
-  /var/lib/kubernetes \
-  /var/run/kubernetes
-sudo tar -xvf cni-plugins-amd64-v0.6.0.tgz -C /opt/cni/bin/
-sudo tar -xvf cri-containerd-1.0.0-beta.1.linux-amd64.tar.gz -C /
-chmod +x kubectl kube-proxy kubelet
-sudo mv kubectl kube-proxy kubelet /usr/local/bin/
-```
-
-```sh
 POD_CIDR=$(curl -s http://169.254.169.254/latest/user-data/ \
   | tr "|" "\n" | grep "^pod-cidr" | cut -d"=" -f2)
 echo "${POD_CIDR}"
-```
 
-```sh
 cat > 10-bridge.conf <<EOF
 {
     "cniVersion": "0.3.1",
@@ -1146,56 +1090,9 @@ EXTERNAL_IP=$(aws ec2 describe-instances \
 
 [Guide](https://github.com/kelseyhightower/kubernetes-the-hard-way/blob/master/docs/14-cleanup.md)
 
-## Compute Instances
-
+Terraform makes resource cleanup  trivial
 ```sh
-aws ec2 terminate-instances \
-  --instance-ids \
-    $(aws ec2 describe-instances \
-      --filter "Name=tag:Name,Values=controller-0,controller-1,controller-2,worker-0,worker-1,worker-2" \
-      --output text --query 'Reservations[].Instances[].InstanceId')
-aws ec2 delete-key-pair \
-  --key-name kubernetes
+    terraform destroy
 ```
 
-## Networking
-
-```sh
-aws elbv2 delete-load-balancer \
-  --load-balancer-arn "${LOAD_BALANCER_ARN}"
-aws elbv2 delete-target-group \
-  --target-group-arn "${TARGET_GROUP_ARN}"
-aws ec2 delete-security-group \
-  --group-id "${SECURITY_GROUP_ID}"
-ROUTE_TABLE_ASSOCIATION_ID="$(aws ec2 describe-route-tables \
-  --route-table-ids "${ROUTE_TABLE_ID}" \
-  --output text --query 'RouteTables[].Associations[].RouteTableAssociationId')"
-aws ec2 disassociate-route-table \
-  --association-id "${ROUTE_TABLE_ASSOCIATION_ID}"
-# aws ec2 delete-route \
-#   --route-table-id "${ROUTE_TABLE_ID}" \
-#   --destination-cidr-block 0.0.0.0/0
-# aws ec2 delete-route \
-#   --route-table-id "${ROUTE_TABLE_ID}" \
-#   --destination-cidr-block 10.200.0.0/24
-# aws ec2 delete-route \
-#   --route-table-id "${ROUTE_TABLE_ID}" \
-#   --destination-cidr-block 10.200.1.0/24
-# aws ec2 delete-route \
-#   --route-table-id "${ROUTE_TABLE_ID}" \
-#   --destination-cidr-block 10.200.2.0/24
-aws ec2 delete-route-table \
-  --route-table-id "${ROUTE_TABLE_ID}"
-aws ec2 detach-internet-gateway \
-  --internet-gateway-id "${INTERNET_GATEWAY_ID}" \
-  --vpc-id "${VPC_ID}"
-aws ec2 delete-internet-gateway \
-  --internet-gateway-id "${INTERNET_GATEWAY_ID}"
-aws ec2 delete-subnet \
-  --subnet-id "${SUBNET_ID}"
-aws ec2 delete-dhcp-options \
-  --dhcp-options-id "${DHCP_OPTION_SET_ID}"
-aws ec2 delete-vpc \
-  --vpc-id "${VPC_ID}"
-```
 
